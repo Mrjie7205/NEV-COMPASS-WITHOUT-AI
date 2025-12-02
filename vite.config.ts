@@ -10,7 +10,6 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   return {
     plugins: [react()],
-    // Removing base: '/' allows Netlify to handle paths relative to root automatically
     define: {
       'process.env.API_KEY': JSON.stringify(env.API_KEY)
     },
