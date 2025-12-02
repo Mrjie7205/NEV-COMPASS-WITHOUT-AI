@@ -9,9 +9,13 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   return {
     plugins: [react()],
+    base: '/', // Ensure absolute paths for Netlify
     define: {
-      // 这是一个垫片，让代码中的 process.env.API_KEY 在浏览器中也能工作
       'process.env.API_KEY': JSON.stringify(env.API_KEY)
+    },
+    build: {
+      outDir: 'dist',
+      assetsDir: 'assets',
     }
   };
 });
