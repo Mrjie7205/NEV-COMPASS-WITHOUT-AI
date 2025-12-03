@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { Sparkles, ChevronLeft, Check, RotateCcw, Calculator, Wallet, Users } from 'lucide-react';
+import { Sparkles, ChevronLeft, Check, RotateCcw, Calculator, Wallet, Users, RefreshCw } from 'lucide-react';
 import { CAR_DATABASE } from '../constants';
 import { QuizQuestion, CarModel, PowerType, CarType, Brand } from '../types';
 import CarCard from './CarCard';
@@ -106,18 +106,30 @@ interface Recommendation {
     score: number;
 }
 
+interface ScoredCar {
+    car: CarModel;
+    score: number;
+    reasons: string[];
+}
+
 const SmartSelector: React.FC = () => {
     const [mode, setMode] = useState<'intro' | 'quiz' | 'analyzing' | 'result'>('intro');
     const [currentQuestionIdx, setCurrentQuestionIdx] = useState(0);
     const [answers, setAnswers] = useState<Record<string, string>>({});
+    
+    // Result State
+    const [allScoredCars, setAllScoredCars] = useState<ScoredCar[]>([]);
     const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
     const [analysisText, setAnalysisText] = useState('');
+    const [batchIndex, setBatchIndex] = useState(0);
 
     const startQuiz = () => {
         setMode('quiz');
         setCurrentQuestionIdx(0);
         setAnswers({});
         setRecommendations([]);
+        setAllScoredCars([]);
+        setBatchIndex(0);
     };
 
     const handleAnswer = (option: string) => {
@@ -291,6 +303,61 @@ const SmartSelector: React.FC = () => {
         return { score, reasons };
     };
 
+    const updateDisplayBatch = (scoredList: ScoredCar[], batchIdx: number, currentAnswers: Record<string, string>) => {
+        // Calculate pagination (3 items per page)
+        const totalItems = scoredList.length;
+        if (totalItems === 0) return;
+
+        const startIndex = (batchIdx * 3) % totalItems;
+        
+        // Pick 3 items, looping if necessary (though for a list > 3 it's just circular)
+        const currentBatch: ScoredCar[] = [];
+        for (let i = 0; i < 3; i++) {
+            const idx = (startIndex + i) % totalItems;
+            currentBatch.push(scoredList[idx]);
+        }
+
+        // Construct Result Objects
+        const finalRecs: Recommendation[] = currentBatch.map(item => {
+            // Generate dynamic reason string
+            let uniqueReason = item.reasons.slice(0, 2).join('，');
+            if (!uniqueReason) uniqueReason = "综合性能优秀";
+            
+            // Add price context if it matches budget well
+            const [minB, maxB] = parseBudget(currentAnswers['budget']);
+            if (item.car.priceRange[0] <= maxB && item.car.priceRange[1] >= minB) {
+                uniqueReason += "，符合预算";
+            } else if (item.car.priceRange[0] > maxB) {
+                uniqueReason += "，预算略超但值得";
+            }
+
+            return {
+                id: item.car.id,
+                score: item.score,
+                reason: uniqueReason
+            };
+        });
+
+        // Update Text
+        const topCar = currentBatch[0]?.car;
+        let analysis = "";
+        if (batchIdx === 0) {
+            analysis = "根据您的需求，我们为您筛选了匹配度最高的三款车型。";
+        } else {
+            analysis = "为您切换了一批备选车型，虽然匹配得分略低，但也许更合眼缘。";
+        }
+        
+        if (topCar) {
+            analysis += `重点推荐${topCar.name}。`;
+            if (currentAnswers['power'] === '混动' || currentAnswers['charging'] === '充电困难') {
+                analysis += "考虑到补能需求，该车型的动力形式非常适合您。";
+            }
+        }
+
+        setAnalysisText(analysis);
+        setRecommendations(finalRecs);
+    };
+
     const submitQuiz = async (finalAnswers: Record<string, string>) => {
         setMode('analyzing');
         
@@ -305,45 +372,22 @@ const SmartSelector: React.FC = () => {
             // Sort by score descending
             scoredCars.sort((a, b) => b.score - a.score);
 
-            // Pick top 3 (Fallback logic built-in: even low scores will be picked if they are the "best" available)
-            const top3 = scoredCars.slice(0, 3);
-
-            // Construct Result Objects
-            const finalRecs: Recommendation[] = top3.map(item => {
-                // Generate dynamic reason string
-                let uniqueReason = item.reasons.slice(0, 2).join('，');
-                if (!uniqueReason) uniqueReason = "综合性能优秀";
-                
-                // Add price context if it matches budget well
-                const [minB, maxB] = parseBudget(finalAnswers['budget']);
-                if (item.car.priceRange[0] <= maxB && item.car.priceRange[1] >= minB) {
-                    uniqueReason += "，符合预算";
-                }
-
-                return {
-                    id: item.car.id,
-                    score: item.score,
-                    reason: uniqueReason
-                };
-            });
-
-            // Generate simple analysis text based on top pick
-            const topCar = top3[0]?.car;
-            let analysis = "根据您的需求，我们为您筛选了以上三款车型。";
-            if (topCar) {
-                analysis = `基于您${finalAnswers['budget']}的预算和对${finalAnswers['type']}的需求，我们重点推荐${topCar.name}。`;
-                if (finalAnswers['power'] === '混动' || finalAnswers['charging'] === '充电困难') {
-                    analysis += "考虑到您的补能需求，混动或长续航车型是最佳选择。";
-                } else if (finalAnswers['smart'] === '高阶智驾') {
-                    analysis += "这些车型均配备了该价位段领先的智能驾驶系统。";
-                }
-            }
-
-            setAnalysisText(analysis);
-            setRecommendations(finalRecs);
+            setAllScoredCars(scoredCars);
+            setBatchIndex(0);
+            updateDisplayBatch(scoredCars, 0, finalAnswers);
             setMode('result');
 
         }, 1500);
+    };
+
+    const handleNextBatch = () => {
+        const nextBatchIdx = batchIndex + 1;
+        setBatchIndex(nextBatchIdx);
+        setMode('analyzing'); // Brief loading effect
+        setTimeout(() => {
+            updateDisplayBatch(allScoredCars, nextBatchIdx, answers);
+            setMode('result');
+        }, 500);
     };
     
     // --- ALGORITHM LOGIC END ---
@@ -482,13 +526,10 @@ const SmartSelector: React.FC = () => {
                              <div className="absolute inset-0 border-4 border-cyan-500 rounded-full border-t-transparent animate-spin"></div>
                              <Sparkles className="absolute inset-0 m-auto text-cyan-500" size={32} />
                         </div>
-                        <h3 className="text-2xl font-bold text-slate-800 mb-2">智能算法计算中...</h3>
+                        <h3 className="text-2xl font-bold text-slate-800 mb-2">
+                            {batchIndex === 0 ? '智能算法计算中...' : '正在筛选更多车型...'}
+                        </h3>
                         <p className="text-slate-500">正在对比车型库参数与您的需求匹配度</p>
-                        <div className="mt-8 space-y-2 text-sm text-slate-400">
-                            <p className="animate-pulse delay-75">正在计算落地预算...</p>
-                            <p className="animate-pulse delay-150">正在加权智驾能力...</p>
-                            <p className="animate-pulse delay-300">正在筛选最优推荐...</p>
-                        </div>
                     </div>
                 )}
 
@@ -509,10 +550,10 @@ const SmartSelector: React.FC = () => {
                             {getRecommendedCars().map((item: any, idx) => {
                                 const lp = calculateLandingPrice(item.car.priceRange[0]);
                                 return (
-                                    <div key={idx} className="relative flex flex-col h-full group">
+                                    <div key={idx} className="relative flex flex-col h-full group animate-scaleIn">
                                         {/* Rank Badge */}
-                                        <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 z-20 bg-gradient-to-r from-yellow-400 to-orange-500 text-white font-bold px-4 py-1 rounded-full shadow-lg text-sm border-2 border-white">
-                                            No. {idx + 1} 匹配
+                                        <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 z-20 bg-gradient-to-r from-yellow-400 to-orange-500 text-white font-bold px-4 py-1 rounded-full shadow-lg text-sm border-2 border-white whitespace-nowrap">
+                                            {batchIndex === 0 ? `No. ${idx + 1} 匹配` : `备选推荐 ${idx + 1}`}
                                         </div>
                                         
                                         <div className="transform group-hover:-translate-y-2 transition-transform duration-300 h-full">
@@ -555,10 +596,18 @@ const SmartSelector: React.FC = () => {
                             })}
                          </div>
 
-                         <div className="text-center pb-8">
+                         <div className="text-center pb-8 flex flex-col md:flex-row justify-center items-center gap-4">
+                            <button 
+                                onClick={handleNextBatch}
+                                className="inline-flex items-center space-x-2 px-6 py-3 bg-white border border-slate-200 rounded-full text-slate-600 hover:bg-slate-50 hover:text-orange-500 transition-colors font-medium shadow-sm w-full md:w-auto justify-center"
+                            >
+                                <RefreshCw size={18} />
+                                <span>换一批推荐</span>
+                            </button>
+
                             <button 
                                 onClick={startQuiz}
-                                className="inline-flex items-center space-x-2 px-6 py-3 bg-white border border-slate-200 rounded-full text-slate-600 hover:bg-slate-50 hover:text-cyan-600 transition-colors font-medium shadow-sm"
+                                className="inline-flex items-center space-x-2 px-6 py-3 bg-white border border-slate-200 rounded-full text-slate-600 hover:bg-slate-50 hover:text-cyan-600 transition-colors font-medium shadow-sm w-full md:w-auto justify-center"
                             >
                                 <RotateCcw size={18} />
                                 <span>重新测评</span>
